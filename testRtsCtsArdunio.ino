@@ -146,8 +146,6 @@ void setup() {
                  CTS_PIN);
     uart_set_hw_flow_ctrl(UART_NUM_1, UART_HW_FLOWCTRL_CTS_RTS, 122);
 
-    // Generous write timeout to accommodate flow-control pauses
-    testSerial.setTimeout(30000);
 
     Serial.printf("UART1 open: %lu baud, RTS/CTS hardware flow control\n",
                   (unsigned long)BAUD_RATE);
@@ -173,25 +171,32 @@ void loop() {
     }
 
     // ── Read with deliberate delay to let the RX buffer fill ─────────────────
+    // The delay lets bytes accumulate, filling the 4096-byte UART ring buffer.
+    // Once full the UART driver can no longer drain the hardware FIFO; the FIFO
+    // backs up to the 122-byte RTS threshold and RTS deasserts, pausing the
+    // writer via the RTS→CTS loopback.  Draining the ring buffer after the
+    // delay drops the FIFO level below threshold and reasserts RTS.
+    //
+    // readBytes() is NOT used here because it blocks for up to setTimeout()
+    // (30 s) waiting for the exact byte count, which deadlocks: writer is paused
+    // by CTS, so no new bytes arrive, readBytes never completes, ring buffer
+    // never drains, RTS stays deasserted permanently.
+    // Instead, read() in a tight loop takes only what is available right now.
     if (testSerial.available()) {
-        // Deliberate slowdown — lets RX buffer fill → RTS deasserts → writer pauses
-        delay(READ_DELAY_MS);
+        delay(READ_DELAY_MS);   // deliberate slowdown — triggers flow control
 
-        int avail = testSerial.available();
-        if (avail > 0) {
-            if (rxBufLen + avail > (int)sizeof(rxBuf)) {
-                Serial.printf("[Reader] OVERFLOW: bufLen=%d avail=%d — draining UART\n",
-                              rxBufLen, avail);
-                // Drain ALL pending bytes from the UART driver to prevent avail
-                // snowballing on the next tick (old bytes + new bytes = ever-growing).
-                while (testSerial.available()) testSerial.read();
-                rxBufLen = 0;
-                crcErrors++;
-            } else {
-                int got = testSerial.readBytes(rxBuf + rxBufLen, avail);
-                rxBufLen += got;
-                parsePackets();
+        if (rxBufLen >= (int)sizeof(rxBuf)) {
+            // Accumulation buffer full — drain UART and resync
+            Serial.printf("[Reader] OVERFLOW: bufLen=%d — draining UART\n", rxBufLen);
+            while (testSerial.available()) testSerial.read();
+            rxBufLen = 0;
+            crcErrors++;
+        } else {
+            // Non-blocking drain: read exactly what is available right now
+            while (testSerial.available() && rxBufLen < (int)sizeof(rxBuf)) {
+                rxBuf[rxBufLen++] = (uint8_t)testSerial.read();
             }
+            parsePackets();
         }
     }
 
