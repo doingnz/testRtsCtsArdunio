@@ -31,6 +31,7 @@
  */
 
 #include <Arduino.h>
+#include "driver/uart.h"     // uart_get_buffered_data_len(), UART_NUM_1
 
 // ── Pin assignments ────────────────────────────────────────────────────────────
 static const int TX_PIN  = 17; //4
@@ -39,8 +40,8 @@ static const int RTS_PIN = 21; //6
 static const int CTS_PIN = 47;  //7
 
 // ── Communication parameters ──────────────────────────────────────────────────
-static const uint32_t BAUD_RATE     = 921600;
-static const int      READ_DELAY_MS = 200;    // deliberate reader slowdown → triggers flow control
+static const uint32_t BAUD_RATE     = 115200;
+static const int      READ_DELAY_MS = 100;    // deliberate reader slowdown → triggers flow control
 static const int      WRITE_DELAY_MS = 0;     // >0 slows writer for easier observation
 static const int      DATA_SIZE     = 64;     // payload bytes per packet
 
@@ -123,11 +124,6 @@ void setup() {
     testSerial.setPins(-1, -1, CTS_PIN, RTS_PIN);
     testSerial.setHwFlowCtrlMode(UART_HW_FLOWCTRL_CTS_RTS, 122);
 
-    // Ensure the RX pin output buffer is disabled without disturbing the GPIO
-    // matrix peripheral assignment.  pinMode() must NOT be used here — it
-    // resets the GPIO matrix and disconnects the pin from the UART peripheral.
-    gpio_set_direction((gpio_num_t)RX_PIN, GPIO_MODE_INPUT);
-
     // Generous write timeout to accommodate flow-control pauses
     testSerial.setTimeout(30000);
 
@@ -192,6 +188,14 @@ void loop() {
         lastRxSnap   = pktsRx;
         long throughput = (long)rxRate * PACKET_SIZE;
 
+        // Hardware-level RX diagnostic:
+        //   hwBuf > 0 but available() == 0  → bytes in UART FIFO/driver ring
+        //                                     but Arduino layer not surfacing them
+        //   hwBuf == 0 && available() == 0  → bytes not reaching the UART at all
+        //                                     (pin/GPIO matrix problem)
+        size_t hwBuf = 0;
+        uart_get_buffered_data_len(UART_NUM_1, &hwBuf);
+
         Serial.println("─────────── Stats ───────────");
         Serial.printf(" TX: %8d pkts  (%5d/s)\n", sent,   sentRate);
         Serial.printf(" RX: %8d pkts  (%5d/s)\n", pktsRx, rxRate);
@@ -200,8 +204,12 @@ void loop() {
                       throughput, throughput * 8L / 1000L);
         Serial.printf(" Errors  CRC:%d  Seq:%d  Data:%d\n",
                       crcErrors, seqErrors, dataErrors);
-        if (pktsRx == 0)
-            Serial.println(" Result: NO DATA — check RX/TX jumper and RTS/CTS jumper");
+        Serial.printf(" HW UART buf: %u B   Arduino available(): %d B\n",
+                      (unsigned)hwBuf, testSerial.available());
+        if (pktsRx == 0 && hwBuf == 0)
+            Serial.println(" Result: NO DATA — bytes not reaching UART (pin/GPIO matrix issue)");
+        else if (pktsRx == 0 && hwBuf > 0)
+            Serial.println(" Result: NO DATA — bytes in UART buf but Arduino not reading them");
         else if (crcErrors == 0 && seqErrors == 0 && dataErrors == 0)
             Serial.println(" Result: PASS — all packets intact, flow control working");
         else
