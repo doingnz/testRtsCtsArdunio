@@ -40,16 +40,28 @@ static const int RTS_PIN = 21; //6
 static const int CTS_PIN = 47;  //7
 
 // ── Communication parameters ──────────────────────────────────────────────────
-static const uint32_t BAUD_RATE     = 115200;
+//
+// Flow control trigger maths:
+//   RTS deasserts when the hardware FIFO (128 bytes) backs up to the threshold
+//   (122 bytes).  That only happens when the UART driver ring buffer is full and
+//   can no longer drain the FIFO fast enough.
+//
+//   bytes per delay period = BAUD_RATE / 10 * READ_DELAY_MS / 1000
+//     115200 baud, 100 ms → ~1152 bytes/tick  (ring buf 4096: never fills → no FC)
+//     921600 baud, 100 ms → ~9216 bytes/tick  (ring buf 4096: fills in ~44 ms → FC ✓)
+//
+//   921600 is the correct rate to observe RTS/CTS toggling.
+//
+static const uint32_t BAUD_RATE     = 921600;
 static const int      READ_DELAY_MS = 100;    // deliberate reader slowdown → triggers flow control
 static const int      WRITE_DELAY_MS = 0;     // >0 slows writer for easier observation
-static const int      DATA_SIZE     = 64;     // payload bytes per packet
+static const int      DATA_SIZE     = 128;    // payload bytes per packet (larger = fewer, more visible bursts)
 
 static const int      HEADER_SIZE   = 2;
 static const int      SEQ_SIZE      = 4;
 static const int      LEN_SIZE      = 2;
 static const int      CRC_SIZE      = 2;
-static const int      PACKET_SIZE   = HEADER_SIZE + SEQ_SIZE + LEN_SIZE + DATA_SIZE + CRC_SIZE;  // 74
+static const int      PACKET_SIZE   = HEADER_SIZE + SEQ_SIZE + LEN_SIZE + DATA_SIZE + CRC_SIZE;  // 138
 
 static const uint8_t  HDR0 = 0xAA;
 static const uint8_t  HDR1 = 0x55;
