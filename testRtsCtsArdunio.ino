@@ -35,7 +35,7 @@
 
 // ── Pin assignments ────────────────────────────────────────────────────────────
 static const int TX_PIN  = 17; //4
-static const int RX_PIN  = 18; //5
+static const int RX_PIN  = 8; //5
 static const int RTS_PIN = 21; //6
 static const int CTS_PIN = 47;  //7
 
@@ -81,7 +81,9 @@ static volatile bool stopWriter = false;
 static SemaphoreHandle_t statsSem;
 
 // ── Receive accumulation buffer (main loop only) ──────────────────────────────
-static uint8_t rxBuf[PACKET_SIZE * 16];
+// Must hold several delay-periods of data.  At 115200 baud with READ_DELAY_MS=100
+// roughly 1152 bytes arrive per tick; 8 KB gives ~7 ticks of headroom.
+static uint8_t rxBuf[8192];
 static int     rxBufLen = 0;
 
 // ── Hex nibble helper ─────────────────────────────────────────────────────────
@@ -166,8 +168,11 @@ void loop() {
         int avail = testSerial.available();
         if (avail > 0) {
             if (rxBufLen + avail > (int)sizeof(rxBuf)) {
-                Serial.printf("[Reader] OVERFLOW: bufLen=%d avail=%d — resetting\n",
+                Serial.printf("[Reader] OVERFLOW: bufLen=%d avail=%d — draining UART\n",
                               rxBufLen, avail);
+                // Drain ALL pending bytes from the UART driver to prevent avail
+                // snowballing on the next tick (old bytes + new bytes = ever-growing).
+                while (testSerial.available()) testSerial.read();
                 rxBufLen = 0;
                 crcErrors++;
             } else {
