@@ -40,7 +40,7 @@ static const int CTS_PIN = 47;  //7
 
 // ── Communication parameters ──────────────────────────────────────────────────
 static const uint32_t BAUD_RATE     = 921600;
-static const int      READ_DELAY_MS = 100;    // deliberate reader slowdown → triggers flow control
+static const int      READ_DELAY_MS = 200;    // deliberate reader slowdown → triggers flow control
 static const int      WRITE_DELAY_MS = 0;     // >0 slows writer for easier observation
 static const int      DATA_SIZE     = 64;     // payload bytes per packet
 
@@ -113,21 +113,20 @@ void setup() {
 
     // ── Open UART1 with a generous RX buffer ─────────────────────────────────
     // setRxBufferSize must be called before begin().
-    // begin() is called without pin arguments so the GPIO matrix is configured
-    // only once by setPins(), which sets all four pins together.  Passing pins
-    // to both begin() AND setPins() causes a double-configuration that can leave
-    // the RX pin's output buffer enabled (driving it HIGH = UART idle level),
-    // which fights TX when they are connected together in loopback.
+    // begin() configures TX and RX via the GPIO matrix.  setPins() is then
+    // called with -1/-1 for TX/RX so it only adds the CTS/RTS pins without
+    // re-configuring the already-correct TX/RX assignment.
     testSerial.setRxBufferSize(4096);
-    testSerial.begin(BAUD_RATE, SERIAL_8N1, -1, -1);   // no pins yet
+    testSerial.begin(BAUD_RATE, SERIAL_8N1, RX_PIN, TX_PIN);
 
-    // Configure all four UART pins in one call, then enable hardware flow control
-    testSerial.setPins(RX_PIN, TX_PIN, CTS_PIN, RTS_PIN);
+    // Add CTS and RTS pins without disturbing the TX/RX already set by begin()
+    testSerial.setPins(-1, -1, CTS_PIN, RTS_PIN);
     testSerial.setHwFlowCtrlMode(UART_HW_FLOWCTRL_CTS_RTS, 122);
 
-    // Explicitly force RX pin to input-only to ensure the GPIO output buffer
-    // is disabled.  The GPIO matrix sometimes leaves it enabled after setPins().
-    pinMode(RX_PIN, INPUT_PULLUP);
+    // Ensure the RX pin output buffer is disabled without disturbing the GPIO
+    // matrix peripheral assignment.  pinMode() must NOT be used here — it
+    // resets the GPIO matrix and disconnects the pin from the UART peripheral.
+    gpio_set_direction((gpio_num_t)RX_PIN, GPIO_MODE_INPUT);
 
     // Generous write timeout to accommodate flow-control pauses
     testSerial.setTimeout(30000);
@@ -201,7 +200,9 @@ void loop() {
                       throughput, throughput * 8L / 1000L);
         Serial.printf(" Errors  CRC:%d  Seq:%d  Data:%d\n",
                       crcErrors, seqErrors, dataErrors);
-        if (crcErrors == 0 && seqErrors == 0 && dataErrors == 0)
+        if (pktsRx == 0)
+            Serial.println(" Result: NO DATA — check RX/TX jumper and RTS/CTS jumper");
+        else if (crcErrors == 0 && seqErrors == 0 && dataErrors == 0)
             Serial.println(" Result: PASS — all packets intact, flow control working");
         else
             Serial.printf(" Result: FAIL — %d total errors\n",
