@@ -6,7 +6,7 @@
  *
  * Single UART (UART1) loopback — 2 jumper wires required:
  * ┌──────────────────────────────────────────┐
- * │  GPIO17 (TX)  ──────►  GPIO18 (RX)       │  data
+ * │  GPIO17 (TX)  ──────►  GPIO8 (RX)        │  data
  * │  GPIO21 (RTS) ──────►  GPIO47 (CTS)      │  flow control feedback
  * └──────────────────────────────────────────┘
  *
@@ -333,17 +333,21 @@ static void parsePackets() {
                            |  (uint16_t)rxBuf[PACKET_SIZE - 1];
 
         if (calcCrc != packetCrc) {
-            crcErrors++;
-            Serial.printf("[Reader] CRC error: calc=0x%04X pkt=0x%04X\n",
-                          calcCrc, packetCrc);
-            if (ENABLE_ERROR_DUMP) {
-                uint32_t seqGuess = ((uint32_t)rxBuf[2] << 24)
-                                  | ((uint32_t)rxBuf[3] << 16)
-                                  | ((uint32_t)rxBuf[4] <<  8)
-                                  |  (uint32_t)rxBuf[5];
-                dumpPacketComparison("CRC ERROR (seq field may be corrupt)", seqGuess);
-                stopWriter = true;
-                return;
+            // Before rxSynced a false 0xAA55 match in payload data is common;
+            // skip quietly and keep hunting for a real header.
+            if (rxSynced) {
+                crcErrors++;
+                Serial.printf("[Reader] CRC error: calc=0x%04X pkt=0x%04X\n",
+                              calcCrc, packetCrc);
+                if (ENABLE_ERROR_DUMP) {
+                    uint32_t seqGuess = ((uint32_t)rxBuf[2] << 24)
+                                      | ((uint32_t)rxBuf[3] << 16)
+                                      | ((uint32_t)rxBuf[4] <<  8)
+                                      |  (uint32_t)rxBuf[5];
+                    dumpPacketComparison("CRC ERROR (seq field may be corrupt)", seqGuess);
+                    stopWriter = true;
+                    return;
+                }
             }
             shiftBuf(2);
             continue;
@@ -398,7 +402,7 @@ static void parsePackets() {
                 dataOk = false;
             }
         }
-        if (!dataOk && ENABLE_ERROR_DUMP) {
+        if (!dataOk && ENABLE_ERROR_DUMP && rxSynced) {
             char label[32];
             snprintf(label, sizeof(label), "DATA ERROR (seq=%lu)", (unsigned long)seq);
             dumpPacketComparison(label, seq);
@@ -491,7 +495,7 @@ static void printWiringInstructions() {
     Serial.printf( "║  GPIO%-2d (TX)  ──►  GPIO%-2d (RX)   data           ║\n", TX_PIN,  RX_PIN);
     Serial.printf( "║  GPIO%-2d (RTS) ──►  GPIO%-2d (CTS)  flow control   ║\n", RTS_PIN, CTS_PIN);
     Serial.println("╚══════════════════════════════════════════════════╝");
-    Serial.println("  RX buffer fills → RTS (GPIO21) goes LOW");
+    Serial.println("  RX buffer fills → RTS (GPIO21) goes HIGH (deasserted)");
     Serial.println("  → CTS (GPIO47) goes LOW → write() blocks");
     Serial.println();
 }
