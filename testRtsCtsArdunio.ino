@@ -81,6 +81,7 @@ static volatile int      packetsSent = 0;
 
 // Reader-side (updated only by main loop on core 1):
 static uint32_t rxSeq     = 0;
+static bool     rxSynced  = false;  // false until first valid packet accepted
 static int      pktsRx    = 0;
 static int      crcErrors = 0;
 static int      seqErrors = 0;
@@ -165,7 +166,10 @@ static int lastSentSnap = 0, lastRxSnap = 0;
 
 void loop() {
     if (stopWriter) {
-        // Writer halted after error — just idle so the dump stays readable
+        // Writer halted after error — drain UART so the ring buffer empties
+        // and RTS returns LOW (clear visual indication of halted state on
+        // logic analyser), then idle so the dump remains readable.
+        while (testSerial.available()) testSerial.read();
         delay(5000);
         return;
     }
@@ -352,26 +356,35 @@ static void parsePackets() {
                      |  (uint32_t)rxBuf[5];
 
         if (seq != rxSeq) {
-            Serial.printf("[Reader] SeqError: expected %lu got %lu\n",
-                          (unsigned long)rxSeq, (unsigned long)seq);
-            seqErrors++;
-            if (ENABLE_ERROR_DUMP) {
-                uint32_t expectedSeq = rxSeq;
-                rxSeq = seq + 1;
-                pktsRx++;
-                char label[56];
-                snprintf(label, sizeof(label),
-                         "SEQUENCE ERROR (expected %lu, got %lu)",
-                         (unsigned long)expectedSeq, (unsigned long)seq);
-                dumpPacketComparison(label, expectedSeq);
-                stopWriter = true;
-                return;
+            if (!rxSynced) {
+                // First packet after reset: the writer has been running while
+                // the ring buffer was filling so the first decoded seq will
+                // almost never be 0.  Accept it silently as the sync point.
+                Serial.printf("[Reader] Initial sync to seq %lu\n", (unsigned long)seq);
+            } else {
+                Serial.printf("[Reader] SeqError: expected %lu got %lu\n",
+                              (unsigned long)rxSeq, (unsigned long)seq);
+                seqErrors++;
+                if (ENABLE_ERROR_DUMP) {
+                    uint32_t expectedSeq = rxSeq;
+                    rxSeq = seq + 1;
+                    pktsRx++;
+                    rxSynced = true;
+                    char label[56];
+                    snprintf(label, sizeof(label),
+                             "SEQUENCE ERROR (expected %lu, got %lu)",
+                             (unsigned long)expectedSeq, (unsigned long)seq);
+                    dumpPacketComparison(label, expectedSeq);
+                    stopWriter = true;
+                    return;
+                }
             }
             rxSeq = seq + 1;
         } else {
             rxSeq++;
         }
         pktsRx++;
+        rxSynced = true;
 
         // ── Payload data check ────────────────────────────────────────────────
         const int dataStart = HEADER_SIZE + SEQ_SIZE + LEN_SIZE;
