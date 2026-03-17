@@ -33,10 +33,10 @@
 #include <Arduino.h>
 
 // ── Pin assignments ────────────────────────────────────────────────────────────
-static const int TX_PIN  = 17;
-static const int RX_PIN  = 18;
-static const int RTS_PIN = 21;
-static const int CTS_PIN = 47;
+static const int TX_PIN  = 17; //4
+static const int RX_PIN  = 18; //5
+static const int RTS_PIN = 21; //6
+static const int CTS_PIN = 47;  //7
 
 // ── Communication parameters ──────────────────────────────────────────────────
 static const uint32_t BAUD_RATE     = 921600;
@@ -112,13 +112,22 @@ void setup() {
     statsSem = xSemaphoreCreateMutex();
 
     // ── Open UART1 with a generous RX buffer ─────────────────────────────────
-    // setRxBufferSize must be called before begin()
+    // setRxBufferSize must be called before begin().
+    // begin() is called without pin arguments so the GPIO matrix is configured
+    // only once by setPins(), which sets all four pins together.  Passing pins
+    // to both begin() AND setPins() causes a double-configuration that can leave
+    // the RX pin's output buffer enabled (driving it HIGH = UART idle level),
+    // which fights TX when they are connected together in loopback.
     testSerial.setRxBufferSize(4096);
-    testSerial.begin(BAUD_RATE, SERIAL_8N1, RX_PIN, TX_PIN);
+    testSerial.begin(BAUD_RATE, SERIAL_8N1, -1, -1);   // no pins yet
 
-    // Assign RTS/CTS pins and enable hardware flow control
+    // Configure all four UART pins in one call, then enable hardware flow control
     testSerial.setPins(RX_PIN, TX_PIN, CTS_PIN, RTS_PIN);
     testSerial.setHwFlowCtrlMode(UART_HW_FLOWCTRL_CTS_RTS, 122);
+
+    // Explicitly force RX pin to input-only to ensure the GPIO output buffer
+    // is disabled.  The GPIO matrix sometimes leaves it enabled after setPins().
+    pinMode(RX_PIN, INPUT_PULLUP);
 
     // Generous write timeout to accommodate flow-control pauses
     testSerial.setTimeout(30000);
