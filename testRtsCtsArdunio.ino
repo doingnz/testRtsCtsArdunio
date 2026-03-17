@@ -114,15 +114,23 @@ void setup() {
 
     // ── Open UART1 with a generous RX buffer ─────────────────────────────────
     // setRxBufferSize must be called before begin().
-    // begin() configures TX and RX via the GPIO matrix.  setPins() is then
-    // called with -1/-1 for TX/RX so it only adds the CTS/RTS pins without
-    // re-configuring the already-correct TX/RX assignment.
+    // begin() configures TX and RX in the GPIO matrix.
+    // setPins(-1,-1, CTS, RTS) was tried but it silently unassigns RX/TX on
+    // some ESP32 Arduino core versions (hwBuf stayed 0), disconnecting the RX
+    // path that begin() just set up.
+    // Instead, use the ESP-IDF uart_set_pin() with UART_PIN_NO_CHANGE for the
+    // TX and RX slots — this is the guaranteed way to add CTS/RTS without
+    // touching the existing pin assignments.
     testSerial.setRxBufferSize(4096);
     testSerial.begin(BAUD_RATE, SERIAL_8N1, RX_PIN, TX_PIN);
 
-    // Add CTS and RTS pins without disturbing the TX/RX already set by begin()
-    testSerial.setPins(-1, -1, CTS_PIN, RTS_PIN);
-    testSerial.setHwFlowCtrlMode(UART_HW_FLOWCTRL_CTS_RTS, 122);
+    // Add RTS/CTS via ESP-IDF: UART_PIN_NO_CHANGE leaves TX and RX untouched
+    uart_set_pin(UART_NUM_1,
+                 UART_PIN_NO_CHANGE,   // TX — already set by begin()
+                 UART_PIN_NO_CHANGE,   // RX — already set by begin()
+                 RTS_PIN,
+                 CTS_PIN);
+    uart_set_hw_flow_ctrl(UART_NUM_1, UART_HW_FLOWCTRL_CTS_RTS, 122);
 
     // Generous write timeout to accommodate flow-control pauses
     testSerial.setTimeout(30000);
