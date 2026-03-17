@@ -53,9 +53,9 @@ static const int CTS_PIN = 47;  //7
 //   921600 is the correct rate to observe RTS/CTS toggling.
 //
 static const uint32_t BAUD_RATE     = 921600;
-static const int      READ_DELAY_MS = 100;    // deliberate reader slowdown → triggers flow control
-static const int      WRITE_DELAY_MS = 0;     // >0 slows writer for easier observation
-static const int      DATA_SIZE     = 128;    // payload bytes per packet (larger = fewer, more visible bursts)
+static const int      READ_DELAY_MS = 500;    // deliberate reader slowdown → triggers flow control
+static const int      WRITE_DELAY_MS = 20;     // >0 slows writer for easier observation
+static const int      DATA_SIZE     = 1024;    // payload bytes per packet (larger = fewer, more visible bursts)
 
 static const int      HEADER_SIZE   = 2;
 static const int      SEQ_SIZE      = 4;
@@ -137,6 +137,7 @@ void setup() {
     // TX and RX slots — this is the guaranteed way to add CTS/RTS without
     // touching the existing pin assignments.
     testSerial.setRxBufferSize(4096);
+    
     testSerial.begin(BAUD_RATE, SERIAL_8N1, RX_PIN, TX_PIN);
 
     // Add RTS/CTS via ESP-IDF: UART_PIN_NO_CHANGE leaves TX and RX untouched
@@ -169,8 +170,10 @@ void loop() {
         // Writer halted after error — drain UART so the ring buffer empties
         // and RTS returns LOW (clear visual indication of halted state on
         // logic analyser), then idle so the dump remains readable.
+        Serial.printf("Writer halted after error\n");
         while (testSerial.available()) testSerial.read();
         delay(5000);
+        Serial.printf("Writer halted after error: return from loop??\n");
         return;
     }
 
@@ -261,10 +264,31 @@ static void writerTask(void *param) {
     Serial.println("[Writer] started — sending at full speed");
 
     while (!stopWriter) {
+        Serial.printf(" txSeq: %8d ", (uint32_t)txSeq);
+        if (txSeq % 8 == 7) {
+            Serial.printf(" \n");
+        }
         buildPacket(packet, (uint32_t)txSeq);
 
-        // write() blocks automatically when CTS is deasserted (flow control active)
-        testSerial.write(packet, PACKET_SIZE);
+        // Write the packet in chunks sized to the available TX buffer space.
+        // When availableForWrite() returns 0 the TX software buffer is full —
+        // this happens when CTS is deasserted (flow control active) and the
+        // UART hardware has paused draining the buffer.  We wait 1 ms and
+        // retry so the task yields rather than busy-spinning.
+        int offset = 0;
+        while (offset < PACKET_SIZE) {
+            int space = testSerial.availableForWrite();
+            if (space <= 0) {
+                Serial.printf("[Writer] waiting for TX space"
+                              " (seq=%lu offset=%d/%d)\n",
+                              (unsigned long)txSeq, offset, PACKET_SIZE);
+                delay(1);
+                continue;
+            }
+            int chunk = min(space, PACKET_SIZE - offset);
+            testSerial.write(packet + offset, chunk);
+            offset += chunk;
+        }
 
         if (xSemaphoreTake(statsSem, portMAX_DELAY) == pdTRUE) {
             txSeq++;
